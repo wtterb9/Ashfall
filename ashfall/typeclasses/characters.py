@@ -126,20 +126,38 @@ class Character(ObjectParent, DefaultCharacter):
             self.db.constitution += 1
             self.db.hit_points += 20
             self.db.max_hit_points += 20
+            # Warriors get combat skills
+            self.db.skills = {'sword': 10, 'shield': 10, 'armor': 10}
         elif class_name == 'mage':
             self.db.intelligence += 3
             self.db.mana += 50
             self.db.max_mana += 50
+            # Mages get spells
+            self.db.known_spells = ['fireball', 'magic_missile', 'light']
+            self.db.spells = {
+                'fireball': {'cost': 15, 'level': 1},
+                'magic_missile': {'cost': 10, 'level': 1},
+                'light': {'cost': 5, 'level': 1}
+            }
         elif class_name == 'cleric':
             self.db.wisdom += 3
             self.db.mana += 30
             self.db.max_mana += 30
             self.db.hit_points += 10
             self.db.max_hit_points += 10
+            # Clerics get healing spells
+            self.db.known_spells = ['heal', 'cure_light', 'bless']
+            self.db.spells = {
+                'heal': {'cost': 20, 'level': 1},
+                'cure_light': {'cost': 10, 'level': 1},
+                'bless': {'cost': 15, 'level': 1}
+            }
         elif class_name == 'thief':
             self.db.dexterity += 3
             self.db.hit_points += 10
             self.db.max_hit_points += 10
+            # Thieves get stealth skills
+            self.db.skills = {'stealth': 15, 'lockpick': 10, 'sneak': 15}
         elif class_name == 'psionicist':
             self.db.intelligence += 2
             self.db.wisdom += 2
@@ -147,6 +165,13 @@ class Character(ObjectParent, DefaultCharacter):
             self.db.max_mana += 40
             self.db.hit_points += 10
             self.db.max_hit_points += 10
+            # Psionicists get mental powers
+            self.db.known_spells = ['mind_blast', 'telekinesis', 'mind_scan']
+            self.db.spells = {
+                'mind_blast': {'cost': 12, 'level': 1},
+                'telekinesis': {'cost': 8, 'level': 1},
+                'mind_scan': {'cost': 5, 'level': 1}
+            }
 
     def gain_experience(self, amount):
         """Gain experience and check for level up"""
@@ -381,3 +406,235 @@ Damage Bonus: {self.db.damage_bonus}
         if target == self:
             return self.get_stat_display()
         return super().at_look(target, **kwargs)
+
+    def start_combat(self, target, weapon=None):
+        """Start combat with target"""
+        self.db.is_combat = True
+        self.db.combat_target = target
+        self.db.combat_weapon = weapon
+        target.db.is_combat = True
+        target.db.combat_target = self
+        
+        # Start combat timer
+        self.start_combat_timer()
+
+    def end_combat(self):
+        """End combat"""
+        self.db.is_combat = False
+        if self.db.combat_target:
+            self.db.combat_target.db.is_combat = False
+            self.db.combat_target.db.combat_target = None
+        self.db.combat_target = None
+        self.db.combat_weapon = None
+
+    def start_combat_timer(self):
+        """Start combat timer for automatic combat"""
+        from evennia import TICKER_HANDLER
+        TICKER_HANDLER.add(30, self.combat_tick, persistent=False)
+
+    def combat_tick(self):
+        """Handle combat tick"""
+        if not self.db.is_combat or not self.db.combat_target:
+            return
+            
+        target = self.db.combat_target
+        if not target.db.is_combat:
+            self.end_combat()
+            return
+            
+        # Perform combat action
+        self.perform_combat_action(target)
+
+    def perform_combat_action(self, target):
+        """Perform a combat action"""
+        import random
+        
+        # Calculate hit chance
+        hit_chice = 50 + (self.db.hit_bonus or 0) - (target.db.armor_class or 0)
+        if random.randint(1, 100) <= hit_chice:
+            # Hit!
+            damage = self.calculate_damage()
+            target.take_damage(damage)
+            self.msg(f"You hit {target.key} for {damage} damage!")
+            target.msg(f"{self.key} hits you for {damage} damage!")
+            self.location.msg_contents(f"{self.key} hits {target.key} for {damage} damage!", 
+                                    exclude=[self, target])
+        else:
+            # Miss!
+            self.msg(f"You miss {target.key}!")
+            target.msg(f"{self.key} misses you!")
+            self.location.msg_contents(f"{self.key} misses {target.key}!", 
+                                    exclude=[self, target])
+
+    def calculate_damage(self):
+        """Calculate damage dealt"""
+        import random
+        
+        # Base damage from weapon
+        weapon = self.db.equipment.get('wield')
+        if weapon:
+            damage_dice = weapon.db.damage_dice or "1d6"
+            dice, sides = damage_dice.split('d')
+            dice = int(dice)
+            sides = int(sides)
+            damage = sum(random.randint(1, sides) for _ in range(dice))
+        else:
+            damage = random.randint(1, 4)  # Unarmed damage
+            
+        # Add damage bonus
+        damage += (self.db.damage_bonus or 0)
+        
+        # Add strength bonus
+        strength = self.db.strength or 10
+        if strength > 10:
+            damage += (strength - 10) // 2
+            
+        return max(1, damage)
+
+    def take_damage(self, amount):
+        """Take damage"""
+        self.db.hit_points = max(0, (self.db.hit_points or 0) - amount)
+        
+        if self.db.hit_points <= 0:
+            self.die()
+
+    def die(self):
+        """Handle character death"""
+        self.msg("You have died!")
+        self.location.msg_contents(f"{self.key} has died!", exclude=self)
+        
+        # End combat
+        self.end_combat()
+        
+        # Reset hit points
+        self.db.hit_points = self.db.max_hit_points
+        
+        # Move to starting location
+        from evennia import search_object
+        neighborhood = search_object("Ruined Neighborhood")[0]
+        self.move_to(neighborhood)
+        self.msg("You wake up in the neighborhood, having been revived.")
+
+    def cast_spell(self, spell_name, target=None):
+        """Cast a spell"""
+        if spell_name not in self.db.known_spells:
+            self.msg(f"You don't know the spell '{spell_name}'.")
+            return
+            
+        spell_info = self.db.spells.get(spell_name, {})
+        cost = spell_info.get('cost', 10)
+        
+        if self.db.mana < cost:
+            self.msg("You don't have enough mana to cast that spell.")
+            return
+            
+        self.db.mana -= cost
+        
+        # Basic spell effects
+        if spell_name == "heal":
+            if target:
+                target.db.hit_points = min(target.db.max_hit_points, 
+                                         (target.db.hit_points or 0) + 20)
+                self.msg(f"You heal {target.key} for 20 hit points.")
+                target.msg(f"{self.key} heals you for 20 hit points.")
+            else:
+                self.db.hit_points = min(self.db.max_hit_points, 
+                                       (self.db.hit_points or 0) + 20)
+                self.msg("You heal yourself for 20 hit points.")
+        elif spell_name == "cure_light":
+            if target:
+                target.db.hit_points = min(target.db.max_hit_points, 
+                                         (target.db.hit_points or 0) + 10)
+                self.msg(f"You cure {target.key} for 10 hit points.")
+                target.msg(f"{self.key} cures you for 10 hit points.")
+            else:
+                self.db.hit_points = min(self.db.max_hit_points, 
+                                       (self.db.hit_points or 0) + 10)
+                self.msg("You cure yourself for 10 hit points.")
+        elif spell_name == "bless":
+            if target:
+                target.db.hit_bonus = (target.db.hit_bonus or 0) + 2
+                self.msg(f"You bless {target.key}.")
+                target.msg(f"{self.key} blesses you.")
+            else:
+                self.db.hit_bonus = (self.db.hit_bonus or 0) + 2
+                self.msg("You bless yourself.")
+        elif spell_name == "fireball":
+            if target:
+                damage = 15
+                target.take_damage(damage)
+                self.msg(f"You cast fireball at {target.key} for {damage} damage!")
+                target.msg(f"{self.key} casts fireball at you for {damage} damage!")
+                self.location.msg_contents(f"{self.key} casts fireball at {target.key}!", 
+                                        exclude=[self, target])
+            else:
+                self.msg("You need a target for fireball.")
+        elif spell_name == "magic_missile":
+            if target:
+                damage = 8
+                target.take_damage(damage)
+                self.msg(f"You cast magic missile at {target.key} for {damage} damage!")
+                target.msg(f"{self.key} casts magic missile at you for {damage} damage!")
+                self.location.msg_contents(f"{self.key} casts magic missile at {target.key}!", 
+                                        exclude=[self, target])
+            else:
+                self.msg("You need a target for magic missile.")
+        elif spell_name == "light":
+            self.msg("You cast light, illuminating the area.")
+            self.location.msg_contents(f"{self.key} casts light, illuminating the area.", 
+                                    exclude=self)
+        elif spell_name == "mind_blast":
+            if target:
+                damage = 12
+                target.take_damage(damage)
+                self.msg(f"You blast {target.key}'s mind for {damage} damage!")
+                target.msg(f"{self.key} blasts your mind for {damage} damage!")
+                self.location.msg_contents(f"{self.key} blasts {target.key}'s mind!", 
+                                        exclude=[self, target])
+            else:
+                self.msg("You need a target for mind blast.")
+        elif spell_name == "telekinesis":
+            if target:
+                self.msg(f"You use telekinesis on {target.key}.")
+                target.msg(f"{self.key} uses telekinesis on you.")
+                self.location.msg_contents(f"{self.key} uses telekinesis on {target.key}!", 
+                                        exclude=[self, target])
+            else:
+                self.msg("You need a target for telekinesis.")
+        elif spell_name == "mind_scan":
+            if target:
+                self.msg(f"You scan {target.key}'s mind.")
+                target.msg(f"{self.key} scans your mind.")
+                self.location.msg_contents(f"{self.key} scans {target.key}'s mind!", 
+                                        exclude=[self, target])
+            else:
+                self.msg("You need a target for mind scan.")
+        else:
+            self.msg(f"You cast {spell_name}.")
+
+    def start_recovery(self):
+        """Start recovery process while resting"""
+        from evennia import TICKER_HANDLER
+        TICKER_HANDLER.add(10, self.recovery_tick, persistent=False)
+
+    def recovery_tick(self):
+        """Handle recovery tick"""
+        if not self.db.is_resting:
+            return
+            
+        # Recover hit points
+        if self.db.hit_points < self.db.max_hit_points:
+            recovery = min(5, self.db.max_hit_points - self.db.hit_points)
+            self.db.hit_points += recovery
+            self.msg(f"You recover {recovery} hit points while resting.")
+            
+        # Recover mana
+        if self.db.mana < self.db.max_mana:
+            recovery = min(3, self.db.max_mana - self.db.mana)
+            self.db.mana += recovery
+            self.msg(f"You recover {recovery} mana while resting.")
+            
+        # Continue recovery if still resting
+        if self.db.is_resting and (self.db.hit_points < self.db.max_hit_points or 
+                                  self.db.mana < self.db.max_mana):
+            self.start_recovery()

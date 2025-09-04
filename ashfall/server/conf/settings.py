@@ -59,6 +59,9 @@ LEVEL_EXP_MULTIPLIER = 1.2
 # Remort settings
 REQUIRED_REMORTS_FOR_ADVANCED_CLASS = 50
 
+# Default home location (will be created if it doesn't exist)
+DEFAULT_HOME = None
+
 
 ######################################################################
 # Settings given in secret_settings.py override those in this file.
